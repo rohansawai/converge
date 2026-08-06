@@ -1,0 +1,8 @@
+{
+  "ts": "2026-01-15T10:00:00Z",
+  "src_ip": "10.0.1.5",
+  "dst_ip": "203.0.113.99",
+  "protocol": "TCP",
+  "bytes": 1024,
+  "flags": ["REJECT", "SUSPICIOUS"]
+}

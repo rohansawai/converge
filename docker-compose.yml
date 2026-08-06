@@ -1,0 +1,208 @@
+x-python-service: &python-service
+  build: .
+  env_file: .env
+  depends_on:
+    redpanda:
+      condition: service_healthy
+  networks:
+    - converge
+
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.1.10
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp=1
+      - --memory=512M
+      - --reserve-memory=0M
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+      - --pandaproxy-addr=internal://0.0.0.0:8082,external://0.0.0.0:18082
+      - --advertise-pandaproxy-addr=internal://redpanda:8082,external://localhost:18082
+    ports:
+      - "19092:19092"
+      - "9644:9644"
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - converge
+
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:v2.4.6
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8080:8080"
+    networks:
+      - converge
+
+  init-topics:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.1.10
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    volumes:
+      - ./scripts/init_topics.sh:/init_topics.sh:ro
+    entrypoint: ["/bin/bash", "/init_topics.sh"]
+    networks:
+      - converge
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - converge
+
+  init-minio:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./scripts/init_minio.sh:/init_minio.sh:ro
+    entrypoint: ["/bin/sh", "/init_minio.sh"]
+    networks:
+      - converge
+
+  generator-account1:
+    <<: *python-service
+    command:
+      - converge-gen-account1
+      - --rate=1
+      - --malformed-rate=0.02
+    environment:
+      KAFKA_BOOTSTRAP: redpanda:9092
+    depends_on:
+      init-topics:
+        condition: service_completed_successfully
+    profiles: ["generators", "core"]
+
+  generator-account2:
+    <<: *python-service
+    command:
+      - converge-gen-account2
+      - --rate=1
+      - --malformed-rate=0.02
+    environment:
+      KAFKA_BOOTSTRAP: redpanda:9092
+    depends_on:
+      init-topics:
+        condition: service_completed_successfully
+    profiles: ["generators", "core"]
+
+  generator-account3:
+    <<: *python-service
+    command:
+      - converge-gen-account3
+      - --rate=1
+      - --malformed-rate=0.02
+    environment:
+      KAFKA_BOOTSTRAP: redpanda:9092
+    depends_on:
+      init-topics:
+        condition: service_completed_successfully
+    profiles: ["generators", "core"]
+
+  generator-account1-stdout:
+    <<: *python-service
+    command: ["converge-gen-account1", "--stdout-only", "--rate=1"]
+    depends_on: []
+    profiles: ["generators-stdout"]
+
+  generator-account2-stdout:
+    <<: *python-service
+    command: ["converge-gen-account2", "--stdout-only", "--rate=1"]
+    depends_on: []
+    profiles: ["generators-stdout"]
+
+  generator-account3-stdout:
+    <<: *python-service
+    command: ["converge-gen-account3", "--stdout-only", "--rate=1"]
+    depends_on: []
+    profiles: ["generators-stdout"]
+
+  normalizer:
+    <<: *python-service
+    command: ["converge-normalizer"]
+    environment:
+      KAFKA_BOOTSTRAP: redpanda:9092
+    depends_on:
+      init-topics:
+        condition: service_completed_successfully
+    profiles: ["core"]
+
+  iceberg-writer:
+    <<: *python-service
+    command: ["converge-iceberg-writer"]
+    environment:
+      KAFKA_BOOTSTRAP: redpanda:9092
+      MINIO_ENDPOINT: http://minio:9000
+      ICEBERG_CATALOG_PATH: /data/iceberg_catalog.db
+    volumes:
+      - iceberg-catalog:/data
+    depends_on:
+      init-minio:
+        condition: service_completed_successfully
+      normalizer:
+        condition: service_started
+    profiles: ["core"]
+
+  session-state-job:
+    <<: *python-service
+    command: ["converge-session-state"]
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      ICEBERG_CATALOG_PATH: /data/iceberg_catalog.db
+      SESSION_JOB_INTERVAL_SEC: "60"
+    volumes:
+      - iceberg-catalog:/data
+    depends_on:
+      iceberg-writer:
+        condition: service_started
+    profiles: ["core"]
+
+  dashboard:
+    <<: *python-service
+    command: ["streamlit", "run", "src/converge/dashboard/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    environment:
+      KAFKA_BOOTSTRAP: redpanda:9092
+      MINIO_ENDPOINT: http://minio:9000
+      ICEBERG_CATALOG_PATH: /data/iceberg_catalog.db
+    volumes:
+      - iceberg-catalog:/data
+    ports:
+      - "8501:8501"
+    depends_on:
+      session-state-job:
+        condition: service_started
+    profiles: ["core"]
+
+networks:
+  converge:
+
+volumes:
+  minio-data:
+  iceberg-catalog:

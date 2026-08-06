@@ -1,0 +1,7 @@
+{
+  "eventTime": "2026-01-15T10:00:00Z",
+  "eventName": "ConsoleLogin",
+  "userIdentity": {"userName": "alice"},
+  "sourceIPAddress": "203.0.113.1",
+  "errorCode": "Failed authentication"
+}

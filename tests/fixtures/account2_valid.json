@@ -1,0 +1,7 @@
+{
+  "timestamp": "2026-01-15T10:00:00Z",
+  "username": "bob",
+  "action": "login",
+  "ip": "198.51.100.42",
+  "status": "FAIL"
+}
